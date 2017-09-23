@@ -39,6 +39,10 @@ module.exports = {
                     },
                     ignoreMemberSort: {
                         type: "boolean"
+                    },
+                    localImportSortStrategy: {
+                        type: "string",
+                        enum: ["mixed", "before", "after"]
                     }
                 },
                 additionalProperties: false
@@ -55,6 +59,7 @@ module.exports = {
             ignoreMemberSort = configuration.ignoreMemberSort || false,
             memberSyntaxSortOrder = configuration.memberSyntaxSortOrder || ["none", "all", "multiple", "single"],
             typeSortStrategy = configuration.typeSortStrategy || "after",
+            localImportSortStrategy = configuration.localImportSortStrategy || "mixed",
             sourceCode = context.getSourceCode();
         let previousDeclaration = null,
             initialSource = null,
@@ -89,6 +94,10 @@ module.exports = {
          */
         function getMemberParameterGroupIndex(node) {
             return memberSyntaxSortOrder.indexOf(usedMemberSyntax(node));
+        }
+
+        function isLocalImport(node) {
+          return node.source.value.startsWith('.');
         }
 
         /**
@@ -168,29 +177,33 @@ module.exports = {
                   }
               }
               return sections;
-          }, [[]])
+          }, [[]]);
 
           // Sort each grouping
           const sorted = sections.map(section => {
               return section.sort((a, b) => {
                 const currentMemberSyntaxGroupIndex = getMemberParameterGroupIndex(b[0]),
-                    currentMemberIsType = (b[0].importKind && b[0].importKind === 'type') || false,
+                    currentMemberIsType = (b[0].importKind && b[0].importKind === 'type') || false,
+                    currentMemberIsLocalImport = isLocalImport(b[0]),
                     previousMemberSyntaxGroupIndex = getMemberParameterGroupIndex(a[0]),
-                    previousMemberIsType = (a[0].importKind && a[0].importKind === 'type') || false;
+                    previousMemberIsType = (a[0].importKind && a[0].importKind === 'type') || false,
+                    previousMemberIsLocalImport = isLocalImport(a[0]);
                 let currentLocalMemberName = getFirstLocalMemberName(b[0]),
                     previousLocalMemberName = getFirstLocalMemberName(a[0]);
                 if (ignoreCase) {
                     previousLocalMemberName = previousLocalMemberName && previousLocalMemberName.toLowerCase();
                     currentLocalMemberName = currentLocalMemberName && currentLocalMemberName.toLowerCase();
                 }
+
                 if (typeSortStrategy !== "mixed" && currentMemberIsType !== previousMemberIsType) {
                   return ((currentMemberIsType && typeSortStrategy === "before") || (previousMemberIsType && typeSortStrategy === "after")) ? 1 : -1;
-                } if (currentMemberSyntaxGroupIndex !== previousMemberSyntaxGroupIndex) {
+                } else if (localImportSortStrategy !== "mixed" && currentMemberIsLocalImport !== previousMemberIsLocalImport) {
+                  return ((currentMemberIsLocalImport && localImportSortStrategy === "before") || (previousMemberIsLocalImport && localImportSortStrategy === "after")) ? 1 : -1;
+                } else if (currentMemberSyntaxGroupIndex !== previousMemberSyntaxGroupIndex) {
                   return (currentMemberSyntaxGroupIndex < previousMemberSyntaxGroupIndex) ? 1 : -1;
                 } else if(previousLocalMemberName && currentLocalMemberName) {
                   return (currentLocalMemberName < previousLocalMemberName) ? 1 : -1;
                 }
-
                 return 0;
               });
           }).reduce((a, c) => a.concat(c), []); // Flatten groupings
@@ -207,8 +220,11 @@ module.exports = {
                 if (previousDeclaration && !isLineBetween(previousDeclaration, node)) {
                     const currentMemberSyntaxGroupIndex = getMemberParameterGroupIndex(node),
                         currentMemberIsType = (node.importKind && node.importKind === 'type') || false,
+                        currentMemberIsLocalImport = isLocalImport(node),
                         previousMemberSyntaxGroupIndex = getMemberParameterGroupIndex(previousDeclaration),
-                        previousMemberIsType = (previousDeclaration.importKind && previousDeclaration.importKind === 'type') || false;
+                        previousMemberIsType = (previousDeclaration.importKind && previousDeclaration.importKind === 'type') || false,
+                        previousMemberIsLocalImport = isLocalImport(previousDeclaration);
+
                     let currentLocalMemberName = getFirstLocalMemberName(node),
                         previousLocalMemberName = getFirstLocalMemberName(previousDeclaration);
 
@@ -227,6 +243,19 @@ module.exports = {
                                 message: "Expected type imports '{{typeSortStrategy}}' all other imports.",
                                 data: {
                                     typeSortStrategy: typeSortStrategy,
+                                },
+                                fix(fixer) {
+                                  return fixer.replaceTextRange([allDeclarations[0].range[0], allDeclarations[allDeclarations.length - 1].range[1]], sortAndFixAllNodes(initialSource, allDeclarations));
+                                }
+                            });
+                        }
+                    } else if (localImportSortStrategy !== "mixed" && currentMemberIsLocalImport !== previousMemberIsLocalImport) {
+                        if ((currentMemberIsLocalImport && localImportSortStrategy === "before") || (previousMemberIsLocalImport && localImportSortStrategy === "after")) {
+                            context.report({
+                                node: node,
+                                message: "Expected local imports '{{localImportSortStrategy}}' other imports.",
+                                data: {
+                                    localImportSortStrategy: localImportSortStrategy,
                                 },
                                 fix(fixer) {
                                   return fixer.replaceTextRange([allDeclarations[0].range[0], allDeclarations[allDeclarations.length - 1].range[1]], sortAndFixAllNodes(initialSource, allDeclarations));
